@@ -14,14 +14,15 @@ from ignite.metrics import Accuracy, Loss, MetricsLambda, RunningAverage
 from ignite.contrib.handlers import ProgressBar, PiecewiseLinear
 from config import Config
 from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger, OutputHandler, OptimizerParamsHandler
-from pytorch_pretrained_bert import GPT2DoubleHeadsModel, GPT2Tokenizer, WEIGHTS_NAME, CONFIG_NAME, OpenAIAdam
+from transformers import GPT2Tokenizer, GPT2DoubleHeadsModel
+from pytorch_pretrained_bert import WEIGHTS_NAME, CONFIG_NAME, OpenAIAdam
 
 from utils import get_dataset_for_daily_dialog
 
-SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>",
-                  "<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>",
-                  "<directive>", "<inform>", "<commissive>", "<question>",
-                  "<pad>"]
+Special_Tokens = {'bos_token':"<bos>", 'eos_token':"<eos>", 'additional_special_tokens':["<speaker1>","<speaker2>","<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>",
+                  "<directive>", "<inform>", "<commissive>", "<question>"], 'pad_token':"<pad>"}
+special_tokens = ["<bos>", "<eos>", "<speaker1>","<speaker2>", "<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>",
+                  "<directive>", "<inform>", "<commissive>", "<question>","<pad>"]
 MODEL_INPUTS = ["input_ids", "mc_token_ids", "lm_labels", "mc_labels", "token_type_ids", "token_emotion_ids"]
 PADDED_INPUTS = ["input_ids", "lm_labels", "token_type_ids", "token_emotion_ids"]
 
@@ -48,7 +49,7 @@ def pad_dataset(dataset, padding=0):
 
 def build_input_from_segments(history, emotions, reply, candidate_emotion, tokenizer, lm_labels=False, with_eos=True):
     """ Build a sequence of input from 3 segments: persona, history and last reply """
-    bos, eos, speaker1, speaker2 = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:4])
+    bos, eos, speaker1, speaker2 = tokenizer.convert_tokens_to_ids(special_tokens[:4])
 
     instance = {}
     sequence = [[bos] + history[0]] + history[1:] + [reply + ([eos] if with_eos else [])]
@@ -71,7 +72,7 @@ def build_input_from_segments(history, emotions, reply, candidate_emotion, token
 
 def get_data_loaders(config, tokenizer):
     """ Prepare the dataset for training and evaluation """
-    personachat = get_dataset_for_daily_dialog(tokenizer, config.dataset_path, config.dataset_cache, SPECIAL_TOKENS)
+    personachat = get_dataset_for_daily_dialog(tokenizer, config.dataset_path, config.dataset_cache, special_tokens)
 
     logger.info("Build inputs and labels")
     datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
@@ -104,7 +105,7 @@ def get_data_loaders(config, tokenizer):
     logger.info("Pad inputs and convert to Tensor")
     tensor_datasets = {"train": [], "valid": []}
     for dataset_name, dataset in datasets.items():
-        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-1]))
+        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(special_tokens[-1]))
         for input_name in MODEL_INPUTS:
             tensor = torch.tensor(dataset[input_name])
             if input_name != "mc_labels":
@@ -146,8 +147,8 @@ def train():
     tokenizer = tokenizer_class.from_pretrained(config.model_checkpoint)
     model_class = GPT2DoubleHeadsModel
     model = model_class.from_pretrained(config.model_checkpoint)
-    tokenizer.set_special_tokens(SPECIAL_TOKENS)
-    model.set_num_special_tokens(len(SPECIAL_TOKENS))
+    tokenizer.add_special_tokens(Special_Tokens)
+    model.resize_token_embeddings(len(tokenizer))
     model.to(config.device)
     optimizer = OpenAIAdam(model.parameters(), lr=config.lr)
 
@@ -246,7 +247,7 @@ def train():
     # On the main process: close tensorboard logger and rename the last checkpoint (for easy re-loading with
     # OpenAIGPTModel.from_pretrained method)
     if config.local_rank in [-1, 0] and config.n_epochs > 0:
-        os.rename(checkpoint_handler._saved[-1][-1], os.path.join(config.log_dir, WEIGHTS_NAME))  # TODO: PR in ignite to have better access to saved file paths (cleaner)
+        os.rename(config.log_dir + '/' + checkpoint_handler._saved[-1][-1], os.path.join(config.log_dir, WEIGHTS_NAME))  # TODO: PR in ignite to have better access to saved file paths (cleaner)
         tb_logger.close()
 
 
