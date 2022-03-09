@@ -42,7 +42,7 @@ def pad_dataset(dataset, padding=0):
     simpler. """
     max_l = max(len(x) for x in dataset["input_ids"])
     for name in PADDED_INPUTS:
-        dataset[name] = [x + [padding if name != "lm_labels" else -1] * (max_l - len(x)) for x in dataset[name]]
+        dataset[name] = [x + [padding if name != "lm_labels" else -100] * (max_l - len(x)) for x in dataset[name]]
     return dataset
 
 
@@ -63,10 +63,9 @@ def build_input_from_segments(history, emotions, reply, candidate_emotion, token
         candidate_emotion] * len(sequence[-1])
 
     instance["mc_token_ids"] = len(instance["input_ids"]) - 1
-    instance["lm_labels"] = [-1] * len(instance["input_ids"])
+    instance["lm_labels"] = [-100] * len(instance["input_ids"])
     if lm_labels:
-        instance["lm_labels"] = ([-1] * sum(len(s) for s in sequence[:-1])) + [-1] + sequence[-1][
-                                                                                     1:]  # all -1 except for reply, reply is just the ids
+        instance["lm_labels"] = ([-100] * sum(len(s) for s in sequence[:-1])) + [-100] + sequence[-1][1:]  # all -1 except for reply, reply is just the ids
     return instance, sequence
 
 
@@ -76,7 +75,7 @@ def get_data_loaders(config, tokenizer):
 
     logger.info("Build inputs and labels")
     datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
-    gpu_max_length = 310
+    gpu_max_length = 256
     for dataset_name, dataset in personachat.items():
         num_candidates = len(dataset[0]["utterances"][0]["candidates"])
         if config.num_candidates > 0 and dataset_name == 'train':
@@ -209,7 +208,7 @@ def train():
 
     # Prepare metrics - note how we compute distributed metrics
     RunningAverage(output_transform=lambda x: x).attach(trainer, "loss")
-    metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-1), output_transform=lambda x: (x[0][0], x[1][0])),
+    metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-100, output_transform=lambda x: (x[0][0], x[1][0])),
                "accuracy": Accuracy(output_transform=lambda x: (x[0][1], x[1][1]))}
     metrics.update({"average_nll": MetricsLambda(average_distributed_scalar, metrics["nll"], config),
                     "average_accuracy": MetricsLambda(average_distributed_scalar, metrics["accuracy"], config)})
@@ -233,13 +232,13 @@ def train():
                                                               another_engine=trainer),
                          event_name=Events.EPOCH_COMPLETED)
 
-        checkpoint_handler = ModelCheckpoint(tb_logger.writer.log_dir, 'checkpoint', save_interval=1, n_saved=3)
+        checkpoint_handler = ModelCheckpoint(config.log_dir, 'checkpoint', save_interval=1, n_saved=3, require_empty=False)
         trainer.add_event_handler(Events.EPOCH_COMPLETED, checkpoint_handler, {
             'mymodel': getattr(model, 'module', model)})  # "getattr" take care of distributed encapsulation
 
-        torch.save(config, tb_logger.writer.log_dir + '/model_training_args.bin')
-        getattr(model, 'module', model).config.to_json_file(os.path.join(tb_logger.writer.log_dir, CONFIG_NAME))
-        tokenizer.save_vocabulary(tb_logger.writer.log_dir)
+        torch.save(config, config.log_dir + '/full_model_training_args.bin')
+        getattr(model, 'module', model).config.to_json_file(os.path.join(config.log_dir, CONFIG_NAME))
+        tokenizer.save_vocabulary(config.log_dir)
 
     # Run the training
     trainer.run(train_loader, max_epochs=config.n_epochs)
@@ -247,8 +246,7 @@ def train():
     # On the main process: close tensorboard logger and rename the last checkpoint (for easy re-loading with
     # OpenAIGPTModel.from_pretrained method)
     if config.local_rank in [-1, 0] and config.n_epochs > 0:
-        os.rename(checkpoint_handler._saved[-1][1][-1], os.path.join(tb_logger.writer.log_dir,
-                                                                     WEIGHTS_NAME))  # TODO: PR in ignite to have better access to saved file paths (cleaner)
+        os.rename(checkpoint_handler._saved[-1][-1], os.path.join(config.log_dir, WEIGHTS_NAME))  # TODO: PR in ignite to have better access to saved file paths (cleaner)
         tb_logger.close()
 
 
