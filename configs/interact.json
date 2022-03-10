@@ -1,0 +1,15 @@
+{
+   "dataset_path" : "dataset/daily_dialog.json",
+   "model" : "gpt2",
+   "dataset_cache" :  "./caches/dataset_cache_OpenAIGPTTokenizer",
+   "model_checkpoint" : "logger/pytorch_model.bin",
+   "max_history" : 2,
+   "device" : "cpu",
+   "no_sample" : true,
+   "max_length" : 20,
+   "min_length" : 1,
+   "seed" : 42,
+   "temperature" : 0.7,
+   "top_k" : 0,
+   "top_p" : 0.9
+}
