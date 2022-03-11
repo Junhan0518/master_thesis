@@ -13,7 +13,7 @@ from ignite.handlers import ModelCheckpoint
 from ignite.metrics import Accuracy, Loss, MetricsLambda, RunningAverage
 from ignite.contrib.handlers import ProgressBar, PiecewiseLinear
 from config import Config
-from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger, OutputHandler, OptimizerParamsHandler
+from ignite.contrib.handlers.tensorboard_logger import *
 from transformers import GPT2Tokenizer, GPT2DoubleHeadsModel
 from pytorch_pretrained_bert import WEIGHTS_NAME, CONFIG_NAME, OpenAIAdam
 
@@ -76,7 +76,7 @@ def get_data_loaders(config, tokenizer):
 
     logger.info("Build inputs and labels")
     datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
-    gpu_max_length = 256
+    gpu_max_length = 64
     for dataset_name, dataset in personachat.items():
         num_candidates = len(dataset[0]["utterances"][0]["candidates"])
         if config.num_candidates > 0 and dataset_name == 'train':
@@ -143,10 +143,8 @@ def train():
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
     logger.info("Prepare tokenizer, pretrained model and optimizer - add special tokens for fine-tuning")
-    tokenizer_class = GPT2Tokenizer
-    tokenizer = tokenizer_class.from_pretrained(config.model_checkpoint)
-    model_class = GPT2DoubleHeadsModel
-    model = model_class.from_pretrained(config.model_checkpoint)
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    model = GPT2DoubleHeadsModel.from_pretrained('gpt2')
     tokenizer.add_special_tokens(Special_Tokens)
     model.resize_token_embeddings(len(tokenizer))
     model.to(config.device)
@@ -162,9 +160,9 @@ def train():
     # Training function and trainer
     def update(engine, batch):
         model.train()
-        input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids = tuple(
-            input_tensor.to(config.device) for input_tensor in batch)
-        lm_loss, mc_loss = model(input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids)
+        input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids = tuple(input_tensor.to(config.device) for input_tensor in batch)
+        model_outputs = model(input_ids, mc_token_ids = mc_token_ids, labels = lm_labels, mc_labels = mc_labels, token_type_ids = token_type_ids, token_emotion_ids = token_emotion_ids)
+        lm_loss, mc_loss = model_outputs[0], model_outputs[1]
         loss = (lm_loss * config.lm_coef + mc_loss * config.mc_coef) / config.gradient_accumulation_steps
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_norm)
@@ -182,8 +180,7 @@ def train():
             batch = tuple(input_tensor.to(config.device) for input_tensor in batch)
             input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids = batch
             # logger.info(tokenizer.decode(input_ids[0, -1, :].tolist()))
-            model_outputs = model(input_ids, mc_token_ids, token_type_ids=token_type_ids,
-                                  token_emotion_ids=token_emotion_ids)
+            model_outputs = model(input_ids, mc_token_ids = mc_token_ids, token_type_ids=token_type_ids, token_emotion_ids=token_emotion_ids)
             lm_logits, mc_logits = model_outputs[0], model_outputs[1]  # So we can also use GPT2 outputs
             lm_logits_flat_shifted = lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
             lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
@@ -209,7 +206,7 @@ def train():
 
     # Prepare metrics - note how we compute distributed metrics
     RunningAverage(output_transform=lambda x: x).attach(trainer, "loss")
-    metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-100, output_transform=lambda x: (x[0][0], x[1][0])),
+    metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-100), output_transform=lambda x: (x[0][0], x[1][0])),
                "accuracy": Accuracy(output_transform=lambda x: (x[0][1], x[1][1]))}
     metrics.update({"average_nll": MetricsLambda(average_distributed_scalar, metrics["nll"], config),
                     "average_accuracy": MetricsLambda(average_distributed_scalar, metrics["accuracy"], config)})
@@ -229,9 +226,7 @@ def train():
         tb_logger.attach(trainer, log_handler=OutputHandler(tag="training", metric_names=["loss"]),
                          event_name=Events.ITERATION_COMPLETED)
         tb_logger.attach(trainer, log_handler=OptimizerParamsHandler(optimizer), event_name=Events.ITERATION_STARTED)
-        tb_logger.attach(evaluator, log_handler=OutputHandler(tag="validation", metric_names=list(metrics.keys()),
-                                                              another_engine=trainer),
-                         event_name=Events.EPOCH_COMPLETED)
+        tb_logger.attach(evaluator, log_handler=OutputHandler(tag="validation", metric_names=list(metrics.keys()), global_step_transform=global_step_from_engine(trainer)), event_name=Events.EPOCH_COMPLETED)
 
         checkpoint_handler = ModelCheckpoint(config.log_dir, 'checkpoint', save_interval=1, n_saved=3, require_empty=False)
         trainer.add_event_handler(Events.EPOCH_COMPLETED, checkpoint_handler, {
