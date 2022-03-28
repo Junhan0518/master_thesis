@@ -7,26 +7,36 @@ from itertools import chain
 
 import torch
 from torch.nn.parallel import DistributedDataParallel
+from torch.nn import DataParallel
+import torch.distributed.autograd as dist_autograd
 from torch.utils.data import DataLoader, TensorDataset
 from ignite.engine import Engine, Events
 from ignite.handlers import ModelCheckpoint
 from ignite.metrics import Accuracy, Loss, MetricsLambda, RunningAverage
 from ignite.contrib.handlers import ProgressBar, PiecewiseLinear
 from config import Config
-from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger, OutputHandler, OptimizerParamsHandler
-from pytorch_pretrained_bert import GPT2DoubleHeadsModel, GPT2Tokenizer, WEIGHTS_NAME, CONFIG_NAME, OpenAIAdam
+from ignite.contrib.handlers.tensorboard_logger import *
+from transformers import GPT2Tokenizer, GPT2DoubleHeadsModel
+from pytorch_pretrained_bert import WEIGHTS_NAME, CONFIG_NAME, OpenAIAdam
+from apex import amp
+from torch.cuda.amp import autocast, GradScaler
+
 
 from utils import get_dataset_for_daily_dialog
 
-SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>",
-                  "<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>",
-                  "<directive>", "<inform>", "<commissive>", "<question>",
-                  "<pad>"]
-MODEL_INPUTS = ["input_ids", "mc_token_ids", "lm_labels", "mc_labels", "token_type_ids", "token_emotion_ids"]
-PADDED_INPUTS = ["input_ids", "lm_labels", "token_type_ids", "token_emotion_ids"]
+Special_Tokens = {'bos_token':"<bos>", 'eos_token':"<eos>", 'additional_special_tokens':["<speaker1>","<speaker2>","<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>",
+                  "<directive>", "<inform>", "<commissive>", "<question>", '<attitude_and_emotion>', '<work>', '<relationship>', '<finance>', '<culture_and_educastion>', '<politics>', '<school_life>', '<tourism>', '<health>', '<ordinary_life>'], 'pad_token':"<pad>"}
+special_tokens = ["<bos>", "<eos>", "<speaker1>","<speaker2>", 
+                  "<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>", 
+                  '<attitude_and_emotion>', '<work>', '<relationship>', '<finance>', '<culture_and_educastion>', '<politics>', '<school_life>', '<tourism>', '<health>', '<ordinary_life>',
+                  "<directive>", "<inform>", "<commissive>", "<question>","<pad>"]
+MODEL_INPUTS = ["input_ids", "mc_token_ids", "lm_labels", "mc_labels", "token_type_ids", "token_emotion_ids", "token_action_ids"]
+PADDED_INPUTS = ["input_ids", "lm_labels", "token_type_ids", "token_emotion_ids", "token_action_ids"]
 
 logger = logging.getLogger(__file__)
-
+os.environ['MASTER_ADDR'] = '127.0.0.1'
+os.environ['MASTER_PORT'] = '29500'
+os.environ['CUDA_VISIVLE_DEVICES'] = '0,1'
 
 def average_distributed_scalar(scalar, config):
     """ Average a scalar over the nodes if we are in distributed training. We use this for distributed evaluation. """
@@ -42,60 +52,60 @@ def pad_dataset(dataset, padding=0):
     simpler. """
     max_l = max(len(x) for x in dataset["input_ids"])
     for name in PADDED_INPUTS:
-        dataset[name] = [x + [padding if name != "lm_labels" else -1] * (max_l - len(x)) for x in dataset[name]]
+        dataset[name] = [x + [padding if name != "lm_labels" else -100] * (max_l - len(x)) for x in dataset[name]]
     return dataset
 
 
-def build_input_from_segments(history, emotions, reply, candidate_emotion, tokenizer, lm_labels=False, with_eos=True):
+def build_input_from_segments(topic, history, emotions, actions, reply, candidate_emotion, candidate_act, tokenizer, lm_labels=False, with_eos=True):
     """ Build a sequence of input from 3 segments: persona, history and last reply """
-    bos, eos, speaker1, speaker2 = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:4])
+    bos, eos, speaker1, speaker2, no_emotion = tokenizer.convert_tokens_to_ids(special_tokens[:5])
+    inform = tokenizer.convert_tokens_to_ids(special_tokens[-4])
+    actions = [inform] + actions
+    emotions = [no_emotion] + emotions
 
     instance = {}
-    sequence = [[bos] + history[0]] + history[1:] + [reply + ([eos] if with_eos else [])]
+    sequence = [[bos] + [topic]] + history + [reply + ([eos] if with_eos else [])]
+
     sequence = [[speaker2 if (len(sequence) - i) % 2 else speaker1] + s for i, s in enumerate(sequence)]
-    all_emotions = emotions + [candidate_emotion]
-    sequence = [[all_emotions[i]] + s for i, s in enumerate(sequence)]
-
     instance["input_ids"] = list(chain(*sequence))
-    instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in
-                                  s]  # the last for is for repeating the speaker1 and speaker2 for all tokens
-    instance["token_emotion_ids"] = [emotions[i] for i, s in enumerate(sequence[:-1]) for _ in s] + [
-        candidate_emotion] * len(sequence[-1])
-
+    instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in s]  # the last for is for repeating the speaker1 and speaker2 for all tokens
+    instance["token_emotion_ids"] = [emotions[i] for i, s in enumerate(sequence[:-1]) for _ in s] + [candidate_emotion] * len(sequence[-1])
+    instance['token_action_ids'] = [actions[i] for i, s in enumerate(sequence[:-1]) for _ in s] + [candidate_act] * len(sequence[-1])    
     instance["mc_token_ids"] = len(instance["input_ids"]) - 1
-    instance["lm_labels"] = [-1] * len(instance["input_ids"])
+    instance["lm_labels"] = [-100] * len(instance["input_ids"])
     if lm_labels:
-        instance["lm_labels"] = ([-1] * sum(len(s) for s in sequence[:-1])) + [-1] + sequence[-1][
-                                                                                     1:]  # all -1 except for reply, reply is just the ids
+        instance["lm_labels"] = ([-100] * sum(len(s) for s in sequence[:-1])) + [-100] + sequence[-1][1:]  # all -1 except for reply, reply is just the ids
     return instance, sequence
 
 
 def get_data_loaders(config, tokenizer):
     """ Prepare the dataset for training and evaluation """
-    personachat = get_dataset_for_daily_dialog(tokenizer, config.dataset_path, config.dataset_cache, SPECIAL_TOKENS)
+    personachat = get_dataset_for_daily_dialog(tokenizer, config.dataset_path, config.dataset_cache, special_tokens)
 
     logger.info("Build inputs and labels")
     datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
-    gpu_max_length = 310
+    gpu_max_length = 200
     for dataset_name, dataset in personachat.items():
         num_candidates = len(dataset[0]["utterances"][0]["candidates"])
         if config.num_candidates > 0 and dataset_name == 'train':
             num_candidates = min(config.num_candidates, num_candidates)
         for dialog in dataset:
+            topic = dialog['topic']
             for utterance in dialog["utterances"]:
                 history = utterance["history"][-(2 * config.max_history + 1):]
                 emotions = utterance["emotion"][-(2 * config.max_history + 1):]
+                actions = utterance["act"][-(2 * config.max_history + 1):]
                 for j, candidate in enumerate(utterance["candidates"][-num_candidates:]):
-                    lm_labels = bool(
-                        j == num_candidates - 1)  # the true label is always the last one in list of candidates
+                    lm_labels = bool(j == num_candidates - 1)  # the true label is always the last one in list of candidates
                     candidate_emotion = utterance['candidates_emotions'][j]
-                    instance, _ = build_input_from_segments(history, emotions, candidate, candidate_emotion, tokenizer,
-                                                            lm_labels)
+                    candidate_act = utterance['candidates_acts'][j]
+                    instance, _ = build_input_from_segments(topic, history, emotions, actions, candidate, candidate_emotion, 
+                                                            candidate_act, tokenizer, lm_labels)
                     if len(instance["input_ids"]) > gpu_max_length:
                         truncated_history = [hist[:10] for hist in history]
                         truncated_candidate = candidate[:10]
-                        instance, _ = build_input_from_segments(truncated_history, emotions, truncated_candidate,
-                                                                candidate_emotion, tokenizer, lm_labels)
+                        instance, _ = build_input_from_segments(topic, truncated_history, emotions, actions, truncated_candidate, candidate_emotion, 
+                                                                candidate_act, tokenizer, lm_labels)
 
                     for input_name, input_array in instance.items():
                         datasets[dataset_name][input_name].append(input_array)
@@ -105,7 +115,7 @@ def get_data_loaders(config, tokenizer):
     logger.info("Pad inputs and convert to Tensor")
     tensor_datasets = {"train": [], "valid": []}
     for dataset_name, dataset in datasets.items():
-        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-1]))
+        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(special_tokens[-1]))
         for input_name in MODEL_INPUTS:
             tensor = torch.tensor(dataset[input_name])
             if input_name != "mc_labels":
@@ -125,7 +135,7 @@ def get_data_loaders(config, tokenizer):
 
 
 def train():
-    config_file = "configs/train_full_config.json"
+    config_file = "configs/allfeatures.json"
     config = Config.from_json_file(config_file)
 
     # logging is set to INFO (resp. WARN) for main (resp. auxiliary) process. logger.info => log main process only,
@@ -138,23 +148,25 @@ def train():
     # Initialize distributed training if needed
     config.distributed = (config.local_rank != -1)
     if config.distributed:
+        torch.distributed.init_process_group(backend='gloo', init_method = 'env://')
+        config.local_rank = torch.distributed.get_rank()
+        print(f"rank = {config.local_rank} is initialized")
         torch.cuda.set_device(config.local_rank)
         config.device = torch.device("cuda", config.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
     logger.info("Prepare tokenizer, pretrained model and optimizer - add special tokens for fine-tuning")
-    tokenizer_class = GPT2Tokenizer
-    tokenizer = tokenizer_class.from_pretrained(config.model_checkpoint)
-    model_class = GPT2DoubleHeadsModel
-    model = model_class.from_pretrained(config.model_checkpoint)
-    tokenizer.set_special_tokens(SPECIAL_TOKENS)
-    model.set_num_special_tokens(len(SPECIAL_TOKENS))
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    model = GPT2DoubleHeadsModel.from_pretrained('gpt2')
+    tokenizer.add_special_tokens(Special_Tokens)
+    model.resize_token_embeddings(len(tokenizer))
     model.to(config.device)
     optimizer = OpenAIAdam(model.parameters(), lr=config.lr)
+    scaler = GradScaler()
+    # model, optimizer = amp.initialize(model, optimizer, opt_level= 'O1')
 
     # Prepare model for FP16 and distributed training if needed (order is important, distributed should be the last)
     if config.distributed:
-        model = DistributedDataParallel(model, device_ids=[config.local_rank], output_device=config.local_rank)
+        model = DistributedDataParallel(model, device_ids=[config.local_rank], output_device = config.local_rank)
 
     logger.info("Prepare datasets")
     train_loader, val_loader, train_sampler, valid_sampler = get_data_loaders(config, tokenizer)
@@ -162,14 +174,22 @@ def train():
     # Training function and trainer
     def update(engine, batch):
         model.train()
-        input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids = tuple(
-            input_tensor.to(config.device) for input_tensor in batch)
-        lm_loss, mc_loss = model(input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids)
-        loss = (lm_loss * config.lm_coef + mc_loss * config.mc_coef) / config.gradient_accumulation_steps
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_norm)
+        input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids, token_actions_ids = tuple(input_tensor.to(config.device) for input_tensor in batch)
+        with autocast():
+            model_outputs = model(input_ids, mc_token_ids = mc_token_ids, labels = lm_labels, mc_labels = mc_labels, token_type_ids = token_type_ids, token_emotion_ids = token_emotion_ids, token_action_ids = token_actions_ids)
+            lm_loss, mc_loss = model_outputs[0], model_outputs[1]
+            loss = (lm_loss * config.lm_coef + mc_loss * config.mc_coef) / config.gradient_accumulation_steps
+        # loss.backward()
+        # with amp.scale_loss(loss, optimizer) as scaled_losses:
+             # scaled_losses.backward()
+        scaler.scale(loss).backward()
+
         if engine.state.iteration % config.gradient_accumulation_steps == 0:
-            optimizer.step()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_norm)
+            scaler.step(optimizer)
+            scaler.update()
+            # optimizer.step()
             optimizer.zero_grad()
         return loss.item()
 
@@ -180,11 +200,10 @@ def train():
         model.eval()
         with torch.no_grad():
             batch = tuple(input_tensor.to(config.device) for input_tensor in batch)
-            input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids = batch
+            input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids, token_emotion_ids, token_actions_ids = batch
             # logger.info(tokenizer.decode(input_ids[0, -1, :].tolist()))
-            model_outputs = model(input_ids, mc_token_ids, token_type_ids=token_type_ids,
-                                  token_emotion_ids=token_emotion_ids)
-            lm_logits, mc_logits = model_outputs[0], model_outputs[1]  # So we can also use GPT2 outputs
+            model_outputs = model(input_ids, mc_token_ids = mc_token_ids, token_type_ids=token_type_ids, token_emotion_ids=token_emotion_ids, token_action_ids = token_actions_ids)
+            lm_logits, mc_logits = model_outputs[0], model_outputs[1] # So we can also use GPT2 outputs
             lm_logits_flat_shifted = lm_logits[..., :-1, :].contiguous().view(-1, lm_logits.size(-1))
             lm_labels_flat_shifted = lm_labels[..., 1:].contiguous().view(-1)
             return (lm_logits_flat_shifted, mc_logits), (lm_labels_flat_shifted, mc_labels)
@@ -209,7 +228,7 @@ def train():
 
     # Prepare metrics - note how we compute distributed metrics
     RunningAverage(output_transform=lambda x: x).attach(trainer, "loss")
-    metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-1), output_transform=lambda x: (x[0][0], x[1][0])),
+    metrics = {"nll": Loss(torch.nn.CrossEntropyLoss(ignore_index=-100), output_transform=lambda x: (x[0][0], x[1][0])),
                "accuracy": Accuracy(output_transform=lambda x: (x[0][1], x[1][1]))}
     metrics.update({"average_nll": MetricsLambda(average_distributed_scalar, metrics["nll"], config),
                     "average_accuracy": MetricsLambda(average_distributed_scalar, metrics["accuracy"], config)})
@@ -229,17 +248,15 @@ def train():
         tb_logger.attach(trainer, log_handler=OutputHandler(tag="training", metric_names=["loss"]),
                          event_name=Events.ITERATION_COMPLETED)
         tb_logger.attach(trainer, log_handler=OptimizerParamsHandler(optimizer), event_name=Events.ITERATION_STARTED)
-        tb_logger.attach(evaluator, log_handler=OutputHandler(tag="validation", metric_names=list(metrics.keys()),
-                                                              another_engine=trainer),
-                         event_name=Events.EPOCH_COMPLETED)
+        tb_logger.attach(evaluator, log_handler=OutputHandler(tag="validation", metric_names=list(metrics.keys()), global_step_transform=global_step_from_engine(trainer)), event_name=Events.EPOCH_COMPLETED)
 
-        checkpoint_handler = ModelCheckpoint(tb_logger.writer.log_dir, 'checkpoint', save_interval=1, n_saved=3)
+        checkpoint_handler = ModelCheckpoint(config.log_dir, 'checkpoint', save_interval=1, n_saved=3, require_empty=False)
         trainer.add_event_handler(Events.EPOCH_COMPLETED, checkpoint_handler, {
             'mymodel': getattr(model, 'module', model)})  # "getattr" take care of distributed encapsulation
 
-        torch.save(config, tb_logger.writer.log_dir + '/model_training_args.bin')
-        getattr(model, 'module', model).config.to_json_file(os.path.join(tb_logger.writer.log_dir, CONFIG_NAME))
-        tokenizer.save_vocabulary(tb_logger.writer.log_dir)
+        torch.save(config, config.log_dir + '/all_model_training_args.bin')
+        getattr(model, 'module', model).config.to_json_file(os.path.join(config.log_dir, CONFIG_NAME))
+        tokenizer.save_vocabulary(config.log_dir)
 
     # Run the training
     trainer.run(train_loader, max_epochs=config.n_epochs)
@@ -247,8 +264,7 @@ def train():
     # On the main process: close tensorboard logger and rename the last checkpoint (for easy re-loading with
     # OpenAIGPTModel.from_pretrained method)
     if config.local_rank in [-1, 0] and config.n_epochs > 0:
-        os.rename(checkpoint_handler._saved[-1][1][-1], os.path.join(tb_logger.writer.log_dir,
-                                                                     WEIGHTS_NAME))  # TODO: PR in ignite to have better access to saved file paths (cleaner)
+        os.rename(config.log_dir + '/' + checkpoint_handler._saved[-1][-1], 'multi_logger/all_model_128_4_30.bin')  # TODO: PR in ignite to have better access to saved file paths (cleaner)
         tb_logger.close()
 
 
