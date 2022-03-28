@@ -3,6 +3,7 @@ import random
 from argparse import ArgumentParser
 from itertools import chain
 from pprint import pformat
+import googletrans
 
 import torch
 import torch.nn.functional as F
@@ -12,21 +13,21 @@ from transformers import GPT2Tokenizer, GPT2DoubleHeadsModel, GPT2LMHeadModel
 from utils import download_pretrained_model, get_dataset
 
 
-def build_input_from_segments(history, emotions, reply, tokenizer, SPECIAL_TOKENS, lm_labels=False, with_eos=True):
+def build_input_from_segments(topic, history, emotions, actions,reply, tokenizer, SPECIAL_TOKENS, lm_labels=False, with_eos=True):
     """ Build a sequence of input from 3 segments: persona, history and last reply """
     bos, eos, speaker1, speaker2 = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:4])
     no_emo, happy = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[4:6])
-    persona = []
+    direct, inform = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[20:22])
     instance = {}
-    sequence = [[bos] + list(chain(*persona))] + history + [
-        reply + ([eos] if with_eos else [])]  # seq = [personas, history, reply] concatenate all persona sentences
+    sequence = [[bos] + topic] + history + [reply + ([eos] if with_eos else [])]  
     sequence = [sequence[0]] + [[speaker2 if (len(sequence) - i) % 2 else speaker1] + s for i, s in
                                 enumerate(sequence[1:])]
-
     instance["input_ids"] = list(chain(*sequence))
     instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in s]  # the last for is for repeating the speaker1 and speaker2 for all tokens
     emo = [[no_emo] + list(chain(*[emotions[i] for i, s in enumerate(sequence[1:-1]) for _ in s])) + [happy] * len(sequence[-1])]
+    acts = [[inform] + list(chain(*[actions[i] for i, s in enumerate(sequence[1:-1])for _ in s])) + [inform] * len(sequence[-1])]
     instance["token_emotion_ids"] = list(chain(*emo))
+    instance['token_action_ids'] = list(chain(*acts))
     instance["mc_token_ids"] = len(instance["input_ids"]) - 1
     instance["lm_labels"] = [-100] * len(instance["input_ids"])
     if lm_labels:
@@ -72,20 +73,21 @@ def top_filtering(logits, top_k=0, top_p=0.0, threshold=-float('Inf'), filter_va
     return logits
 
 
-def sample_sequence(history, tokenizer, emotions, model, args, SPECIAL_TOKENS, current_output=None):
+def sample_sequence(topic, history, tokenizer, emotions, actions ,model, args, SPECIAL_TOKENS, current_output=None):
     special_tokens_ids = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS)
 
     if current_output is None:
         current_output = []
 
     for i in range(args.max_length):
-        instance, sequence = build_input_from_segments(history, emotions, current_output, tokenizer, SPECIAL_TOKENS, with_eos=False)
+        instance, sequence = build_input_from_segments(topic, history, emotions, actions, current_output, tokenizer, SPECIAL_TOKENS, with_eos=False)
 
         input_ids = torch.tensor(instance["input_ids"], device=args.device).unsqueeze(0)
         token_type_ids = torch.tensor(instance["token_type_ids"], device=args.device).unsqueeze(0)
         token_emotion_ids = torch.tensor(instance['token_emotion_ids'], device = args.device).unsqueeze(0)
+        token_action_ids = torch.tensor(instance['token_action_ids'], device = args.device).unsqueeze(0)
 
-        logits = model(input_ids, token_type_ids=token_type_ids, token_emotion_ids = token_emotion_ids)
+        logits = model(input_ids, token_type_ids=token_type_ids, token_emotion_ids = token_emotion_ids, token_action_ids = token_action_ids)
         if "gpt2" == args.model:
             logits = logits[0]
         logits = logits[0, -1, :] / args.temperature
@@ -105,7 +107,6 @@ def sample_sequence(history, tokenizer, emotions, model, args, SPECIAL_TOKENS, c
 
 
 def run():
-    emotions = ["<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>"]
     config_file = "configs/interact.json"
     config = InteractConfig.from_json_file(config_file)
 
@@ -121,14 +122,15 @@ def run():
 
     logger.info("Get pretrained model and tokenizer")
 
-    logger.info("Full model interact!!!")
+    logger.info("All Features model interact!!!")
     Special_Tokens = {'bos_token':"<bos>", 'eos_token':"<eos>", 'additional_special_tokens':["<speaker1>","<speaker2>","<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>",
-                      "<directive>", "<inform>", "<commissive>", "<question>"], 'pad_token':"<pad>"}
+                  "<directive>", "<inform>", "<commissive>", "<question>", '<attitude_and_emotion>', '<work>', '<relationship>', '<finance>', '<culture_and_educastion>', '<politics>', '<school_life>', '<tourism>', '<health>', '<ordinary_life>'], 'pad_token':"<pad>"}
+    SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>","<speaker2>", 
+                  "<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>", 
+                  '<attitude_and_emotion>', '<work>', '<relationship>', '<finance>', '<culture_and_educastion>', '<politics>', '<school_life>', '<tourism>', '<health>', '<ordinary_life>',
+                  "<directive>", "<inform>", "<commissive>", "<question>","<pad>"]
 
-    SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>","<speaker2>", "<no_emotion>", "<happiness>", "<surprise>", "<sadness>", "<disgust>", "<anger>", "<fear>",
-                      "<directive>", "<inform>", "<commissive>", "<question>", "<pad>"]
-
-    model_path = 'full_logger/checkpoint_mymodel_361247.pt'
+    model_path = 'multi_logger/all_model_128_4_30.bin'
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     model = GPT2DoubleHeadsModel.from_pretrained('gpt2')
@@ -139,34 +141,46 @@ def run():
     model.to(config.device)
     model.eval()
 
+    translator = googletrans.Translator()
+
+    topic = input("topic:>>>")
+    topic = tokenizer.encode(topic)
     history = [tokenizer.encode('Hi, what can I help you?')]
+    actions = [tokenizer.encode('<inform>')]
     emotions = [tokenizer.encode('<happiness>')]
-    print('Hi, what can I help you?')
+    # print(translator.translate('Hi, what can I help you?', dest='zh-tw').text)
     while True:
         raw_text = input(">>> ")
+        raw_act = input("act:>>> ")
         raw_emo = input("emo:>>> ")
-        while not raw_text or not raw_emo:
+        while not raw_text or not raw_emo or not raw_act:
             print('Prompt should not be empty!')
             raw_text = input("text:>>> ")
+            raw_act = input("act:>>> ")
             raw_emo = input("emo:>>> ")
+
+        # raw_text = translator.translate(raw_text, dest = 'en').text
+        # print(raw_text)
         if 'bye' in raw_text:
-            print('Hope to see you again')
+            print('下次見!!!')
             break 
+
         history.append(tokenizer.encode(raw_text))
+        actions.append(tokenizer.encode(raw_act))
         emotions.append(tokenizer.encode(raw_emo))
+
         with torch.no_grad():
-            out_ids = sample_sequence(history, tokenizer, emotions, model, config, SPECIAL_TOKENS)
+            out_ids = sample_sequence(topic, history, tokenizer, emotions, actions, model, config, SPECIAL_TOKENS)
         history.append(out_ids)
         emotions.append(tokenizer.encode('<happiness>'))
+        actions.append(tokenizer.encode('<directive>'))
         history = history[-(2 * config.max_history + 1):]
         emotions = emotions[-(2 * config.max_history + 1):]
+        actions = actions[-(2 * config.max_history + 1):]
         out_text = tokenizer.decode(out_ids, skip_special_tokens=True)
         print(out_text)
+        # print(translator.translate(out_text, dest = 'zh-tw').text)
 
 
 if __name__ == "__main__":
-<<<<<<< HEAD
     run()
-=======
-    run()
->>>>>>> 81f6884 (add multi feature model, interaction and some files)

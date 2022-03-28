@@ -3,6 +3,7 @@
    "model" : "gpt2",
    "dataset_cache" :  "./caches/dataset_cache_OpenAIGPTTokenizer",
    "model_checkpoint" : "logger/pytorch_model.bin",
+<<<<<<< HEAD
    "max_history" : 2,
    "device" : "cpu",
    "no_sample" : true,
@@ -13,3 +14,15 @@
    "top_k" : 0,
    "top_p" : 0.9
 }
+=======
+   "max_history" : 10,
+   "device" : "cpu",
+   "no_sample" : true,
+   "max_length" : 25,
+   "min_length" : 1,
+   "seed" : 42,
+   "temperature" : 0.2,
+   "top_k" : 0,
+   "top_p" : 0.85
+}
+>>>>>>> 81f6884 (add multi feature model, interaction and some files)
