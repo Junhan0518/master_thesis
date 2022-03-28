@@ -23,7 +23,16 @@ def build_input_from_segments(history, reply, tokenizer, SPECIAL_TOKENS, lm_labe
                                 enumerate(sequence[1:])]
 
     instance["input_ids"] = list(chain(*sequence))
+<<<<<<< HEAD
     instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in s]  # the last for is for repeating the speaker1 and speaker2 for all tokens
+=======
+<<<<<<< HEAD
+    instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in
+                                  s]  # the last for is for repeating the speaker1 and speaker2 for all tokens
+=======
+    instance["token_type_ids"] = [speaker2 if i % 2 else speaker1 for i, s in enumerate(sequence) for _ in s]  # the last for is for repeating the speaker1 and speaker2 for all tokens
+>>>>>>> 81f6884 (add multi feature model, interaction and some files)
+>>>>>>> revise
     instance["mc_token_ids"] = len(instance["input_ids"]) - 1
     instance["lm_labels"] = [-100] * len(instance["input_ids"])
     if lm_labels:
@@ -128,8 +137,17 @@ def run():
     model.to(config.device)
     model.eval()
 
+<<<<<<< HEAD
     history = [tokenizer.encode('Hi, what can I help you?')]
     print('Hi, what can I help you?')
+=======
+<<<<<<< HEAD
+    history = []
+=======
+    history = [tokenizer.encode('Hi, what can I help you?')]
+    print('Hi, what can I help you?')
+>>>>>>> 81f6884 (add multi feature model, interaction and some files)
+>>>>>>> revise
     while True:
         raw_text = input(">>> ")
         while not raw_text:
@@ -148,4 +166,12 @@ def run():
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     run()
+=======
+<<<<<<< HEAD
+    run()
+=======
+    run()
+>>>>>>> 81f6884 (add multi feature model, interaction and some files)
+>>>>>>> revise
