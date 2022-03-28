@@ -76,15 +76,7 @@ def get_data_loaders(config, tokenizer):
 
     logger.info("Build inputs and labels")
     datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
-<<<<<<< HEAD
     gpu_max_length = 128
-=======
-<<<<<<< HEAD:full_model.py
-    gpu_max_length = 64
-=======
-    gpu_max_length = 128
->>>>>>> 81f6884 (add multi feature model, interaction and some files):emo_model.py
->>>>>>> revise
     for dataset_name, dataset in personachat.items():
         num_candidates = len(dataset[0]["utterances"][0]["candidates"])
         if config.num_candidates > 0 and dataset_name == 'train':
@@ -250,15 +242,7 @@ def train():
     # On the main process: close tensorboard logger and rename the last checkpoint (for easy re-loading with
     # OpenAIGPTModel.from_pretrained method)
     if config.local_rank in [-1, 0] and config.n_epochs > 0:
-<<<<<<< HEAD
         os.rename(config.log_dir + '/' + checkpoint_handler._saved[-1][-1], 'full_logger/full_model_128.bin')  # TODO: PR in ignite to have better access to saved file paths (cleaner)
-=======
-<<<<<<< HEAD:full_model.py
-        os.rename(config.log_dir + '/' + checkpoint_handler._saved[-1][-1], os.path.join(config.log_dir, WEIGHTS_NAME))  # TODO: PR in ignite to have better access to saved file paths (cleaner)
-=======
-        os.rename(config.log_dir + '/' + checkpoint_handler._saved[-1][-1], 'full_logger/full_model_128.bin')  # TODO: PR in ignite to have better access to saved file paths (cleaner)
->>>>>>> 81f6884 (add multi feature model, interaction and some files):emo_model.py
->>>>>>> revise
         tb_logger.close()
 
 

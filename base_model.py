@@ -73,15 +73,7 @@ def get_data_loaders(config, tokenizer):
     logger.info("Build inputs and labels")
     datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
 
-<<<<<<< HEAD
-    gpu_max_length = 64 #this depends on the gpu memory size, using bigger gpu memory you can increase this to include longer inputs
-=======
-<<<<<<< HEAD
-    gpu_max_length = 256 #this depends on the gpu memory size, using bigger gpu memory you can increase this to include longer inputs
-=======
-    gpu_max_length = 64 #this depends on the gpu memory size, using bigger gpu memory you can increase this to include longer inputs
->>>>>>> 81f6884 (add multi feature model, interaction and some files)
->>>>>>> revise
+    gpu_max_length = 64 
     for dataset_name, dataset in personachat.items():
         num_candidates = len(dataset[0]["utterances"][0]["candidates"])
         if config.num_candidates > 0 and dataset_name == 'train':
@@ -223,15 +215,7 @@ def train():
         tb_logger.attach(trainer, log_handler=OptimizerParamsHandler(optimizer), event_name=Events.ITERATION_STARTED)
         tb_logger.attach(evaluator, log_handler=OutputHandler(tag="validation", metric_names=list(metrics.keys()), global_step_transform=global_step_from_engine(trainer)), event_name=Events.EPOCH_COMPLETED)
 
-<<<<<<< HEAD
         checkpoint_handler = ModelCheckpoint(config.log_dir, 'checkpoint', save_interval=1, n_saved=3, require_empty=False)
-=======
-<<<<<<< HEAD
-        checkpoint_handler = ModelCheckpoint(config.log_dir, 'checkpoint', save_interval=1, n_saved=3)
-=======
-        checkpoint_handler = ModelCheckpoint(config.log_dir, 'checkpoint', save_interval=1, n_saved=3, require_empty=False)
->>>>>>> 81f6884 (add multi feature model, interaction and some files)
->>>>>>> revise
         trainer.add_event_handler(Events.EPOCH_COMPLETED, checkpoint_handler, {'mymodel': getattr(model, 'module', model)})  # "getattr" take care of distributed encapsulation
 
         torch.save(config, config.log_dir + '/model_training_args.bin')
@@ -243,15 +227,7 @@ def train():
 
     # On the main process: close tensorboard logger and rename the last checkpoint (for easy re-loading with OpenAIGPTModel.from_pretrained method)
     if config.local_rank in [-1, 0] and config.n_epochs > 0:
-<<<<<<< HEAD
         os.rename(config.log_dir + '/' + checkpoint_handler._saved[-1][-1], 'logger/base_200.bin')  # TODO: PR in ignite to have better access to saved file paths (cleaner)
-=======
-<<<<<<< HEAD
-        os.rename(checkpoint_handler._saved[-1][1][-1], os.path.join(config.log_dir, WEIGHTS_NAME))  # TODO: PR in ignite to have better access to saved file paths (cleaner)
-=======
-        os.rename(config.log_dir + '/' + checkpoint_handler._saved[-1][-1], 'logger/base_200.bin')  # TODO: PR in ignite to have better access to saved file paths (cleaner)
->>>>>>> 81f6884 (add multi feature model, interaction and some files)
->>>>>>> revise
         tb_logger.close()
 
 

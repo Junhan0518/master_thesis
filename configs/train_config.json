@@ -5,18 +5,8 @@
   "num_candidates": 2,
   "do_lower_case": true,
   "max_history": 2,
-<<<<<<< HEAD
-  "train_batch_size": 2,
-  "valid_batch_size": 2,
-=======
-<<<<<<< HEAD
   "train_batch_size": 4,
   "valid_batch_size": 4,
-=======
-  "train_batch_size": 2,
-  "valid_batch_size": 2,
->>>>>>> 81f6884 (add multi feature model, interaction and some files)
->>>>>>> revise
   "gradient_accumulation_steps": 8,
   "lr": 6.25e-5,
   "warmup_proportion": 0.1,
@@ -29,15 +19,5 @@
   "device": "cuda:0",
   "fp16": "",
   "local_rank": -1,
-<<<<<<< HEAD
   "log_dir": "logger"
 }
-=======
-<<<<<<< HEAD
-  "log_dir": ""
-}
-=======
-  "log_dir": "logger"
-}
->>>>>>> 81f6884 (add multi feature model, interaction and some files)
->>>>>>> revise

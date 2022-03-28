@@ -4,13 +4,8 @@
    "model_checkpoint": "gpt2",
    "num_candidates": 2,
    "do_lower_case": true,
-<<<<<<<< HEAD:configs/allfeatures.json
    "max_history": 4,
    "train_batch_size": 4,
-========
-   "max_history": 2,
-   "train_batch_size": 2,
->>>>>>>> revise:configs/full_feature.json
    "valid_batch_size": 2,
    "gradient_accumulation_steps": 8,
    "lr": 6.25e-5,
@@ -18,19 +13,11 @@
    "lm_coef": 1.0,
    "mc_coef": 1.0,
    "max_norm": 1.0,
-<<<<<<<< HEAD:configs/allfeatures.json
    "n_epochs": 20,
-========
-   "n_epochs": 1,
->>>>>>>> revise:configs/full_feature.json
    "personality_permutations":1,
    "eval_before_start": false,
    "device": "cuda",
    "fp16": "",
    "local_rank": -1,
    "log_dir": "multi_logger"
-<<<<<<<< HEAD:configs/allfeatures.json
 }
-========
-}
->>>>>>>> revise:configs/full_feature.json

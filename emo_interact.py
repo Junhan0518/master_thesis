@@ -165,12 +165,5 @@ def run():
 
 
 if __name__ == "__main__":
-<<<<<<< HEAD
     run()
-=======
-<<<<<<< HEAD
-    run()
-=======
-    run()
->>>>>>> 81f6884 (add multi feature model, interaction and some files)
->>>>>>> revise
+
