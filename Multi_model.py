@@ -135,7 +135,7 @@ def get_data_loaders(config, tokenizer):
 
 
 def train():
-    config_file = "configs/allfeatures.json"
+    config_file = "configs/multi_feature_train.json"
     config = Config.from_json_file(config_file)
 
     # logging is set to INFO (resp. WARN) for main (resp. auxiliary) process. logger.info => log main process only,
